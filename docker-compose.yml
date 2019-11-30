@@ -14,17 +14,15 @@ services:
       - traefik-public
     deploy:
       labels:
-        - traefik.frontend.rule=Host:consul.${DOMAIN?Variable DOMAIN not set}
+        - traefik.http.routers.consul.rule=Host(`consul.${DOMAIN?Variable DOMAIN not set}`)
         - traefik.enable=true
-        - traefik.port=8500
+        - traefik.http.services.consul.loadbalancer.server.port=8500
         - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
         - traefik.docker.network=traefik-public
-        # Traefik service that listens to HTTP
-        - traefik.redirectorservice.frontend.entryPoints=http
-        - traefik.redirectorservice.frontend.redirect.entryPoint=https
-        # Traefik service that listens to HTTPS
-        - traefik.webservice.frontend.entryPoints=https
-        - traefik.frontend.auth.basic.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
+        - traefik.http.routers.consul.entrypoints=websecure
+        - traefik.http.routers.consul.tls.certresolver=letsencrypt
+        - traefik.http.routers.consul.middlewares=auth
+        - traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
 
   consul-replica:
     image: consul
@@ -44,10 +42,11 @@ services:
           - spread: node.id
           
   traefik:
-    image: traefik:v1.7
+    image: traefik:v2.1
     ports:
       - 80:80
       - 443:443
+      - 8080:8080
     deploy:
       replicas: ${TRAEFIK_REPLICAS:-3}
       placement:
@@ -56,38 +55,47 @@ services:
         preferences:
           - spread: node.id
       labels:
-        - traefik.frontend.rule=Host:traefik.${DOMAIN?Variable DOMAIN not set}
+        # Dashboard
+        - traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN?Variable DOMAIN not set}`)
+        - traefik.http.routers.traefik.middlewares=auth
+        - traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
+        - traefik.http.routers.traefik.service=api@internal
         - traefik.enable=true
-        - traefik.port=8080
+        - traefik.http.services.traefik.loadbalancer.server.port==8080
         - traefik.tags=traefik-public
         - traefik.docker.network=traefik-public
-        # Traefik service that listens to HTTP
-        - traefik.redirectorservice.frontend.entryPoints=http
-        - traefik.redirectorservice.frontend.redirect.entryPoint=https
         # Traefik service that listens to HTTPS
-        - traefik.webservice.frontend.entryPoints=https
-        - traefik.frontend.auth.basic.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
+        - traefik.http.routers.traefik.entrypoints=websecure
+        - traefik.http.routers.traefik.tls.certresolver=letsencrypt
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: >
-      --docker
-      --docker.swarmmode
-      --docker.watch
-      --docker.exposedbydefault=false
+      --providers.docker=true
+      --providers.docker.swarmMode=true
+      --providers.docker.watch=true
+      --providers.docker.exposedByDefault=false
+      --providers.docker.network=
       --constraints=tag==traefik-public
-      --entrypoints='Name:http Address::80'
-      --entrypoints='Name:https Address::443 TLS'
+      --entryPoints.web.address=:80
+      --entryPoints.websecure.address=:443
       --consul
       --consul.endpoint="consul-leader:8500"
       --acme
-      --acme.email=${EMAIL?Variable EMAIL not set}
-      --acme.storage="traefik/acme/account"
-      --acme.entryPoint=https
-      --acme.httpChallenge.entryPoint=http
-      --acme.onhostrule=true
-      --acme.acmelogging=true
+      --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+      --certificatesResolvers.letsencrypt.acme.email=${EMAIL?Variable EMAIL not set}
+      --certificatesResolvers.letsencrypt.acme.storage=/acme.json
+      --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      --certificatesResolvers.traefik.acme.httpChallenge.entryPoint=web
+      --traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)
+      --traefik.http.routers.http-catchall.entrypoints=web
+      --traefik.http.routers.http-catchall.middlewares=redirect-to-https
+      --traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
       --logLevel=INFO
+      --log.filePath=/var/log/traefik.log
+      --log.format=json
       --accessLog
+      --metrics.prometheus.buckets=[0.1,0.3,1.2,5.0]
+      --metrics.prometheus.entrypoint=metrics
       --api
     networks:
       - default
@@ -95,10 +103,53 @@ services:
     depends_on:
       - consul-leader
 
+  portainer:
+    image: portainer/portainer
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+    volumes:
+      - portainer-data:/data
+    networks:
+      - default
+      - traefik-public
+      - private
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN?Variable DOMAIN not set}`)
+        - traefik.enable=true
+        - traefik.http.services.portainer.loadbalancer.server.port=9000
+        - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+        - traefik.docker.network=traefik-public
+        - traefik.http.routers.portainer.entrypoints=websecure
+        - traefik.http.routers.portainer.tls.certresolver=letsencrypt
+        # - traefik.http.routers.portainer.middlewares=auth
+        # - traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
+
+  agent:
+    image: portainer/agent
+    environment:
+      AGENT_CLUSTER_ADDR: tasks.agent
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+    networks:
+      - private
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
+
 volumes:
   consul-data-leader:
   consul-data-replica:
+  portainer-data:
 
 networks:
   traefik-public:
     external: true
+  private:
+    driver: overlay
+    name: private
