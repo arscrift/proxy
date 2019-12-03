@@ -1,48 +1,6 @@
 version: '3.3'
 
 services:
-  consul-leader:
-    image: consul
-    command: agent -server -client=0.0.0.0 -bootstrap -ui
-    volumes:
-      - consul-data-leader:/consul/data
-    environment:
-      - CONSUL_BIND_INTERFACE=eth0
-      - 'CONSUL_LOCAL_CONFIG={"leave_on_terminate": true}'
-    networks:
-      - default
-      - traefik-public
-    deploy:
-      labels:
-        - traefik.frontend.rule=Host:consul.${DOMAIN?Variable DOMAIN not set}
-        - traefik.enable=true
-        - traefik.port=8500
-        - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
-        - traefik.docker.network=traefik-public
-        # Traefik service that listens to HTTP
-        - traefik.redirectorservice.frontend.entryPoints=http
-        - traefik.redirectorservice.frontend.redirect.entryPoint=https
-        # Traefik service that listens to HTTPS
-        - traefik.webservice.frontend.entryPoints=https
-        - traefik.frontend.auth.basic.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
-
-  consul-replica:
-    image: consul
-    command: agent -server -client=0.0.0.0 -retry-join="consul-leader"
-    volumes:
-      - consul-data-replica:/consul/data
-    environment:
-      - CONSUL_BIND_INTERFACE=eth0
-      - 'CONSUL_LOCAL_CONFIG={"leave_on_terminate": true}'
-    networks:
-      - default
-      - traefik-public
-    deploy:
-      replicas: ${CONSUL_REPLICAS:-3}
-      placement:
-        preferences:
-          - spread: node.id
-          
   traefik:
     image: traefik:v1.7
     ports:
@@ -92,13 +50,54 @@ services:
     networks:
       - default
       - traefik-public
-    depends_on:
-      - consul-leader
+
+  portainer:
+    image: portainer/portainer
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+    volumes:
+      - portainer-data:/data
+    networks:
+      - default
+      - traefik-public
+      - private
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - traefik.frontend.rule=Host:portainer.${DOMAIN?Variable DOMAIN not set}
+        - traefik.enable=true
+        - traefik.port=9000
+        - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
+        - traefik.docker.network=traefik-public
+        # Traefik service that listens to HTTP
+        - traefik.redirectorservice.frontend.entryPoints=http
+        - traefik.redirectorservice.frontend.redirect.entryPoint=https
+        # Traefik service that listens to HTTPS
+        - traefik.webservice.frontend.entryPoints=https
+
+  portainer_agent:
+    image: portainer/agent
+    environment:
+      AGENT_CLUSTER_ADDR: tasks.agent
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+    networks:
+      - private
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.platform.os == linux
 
 volumes:
   consul-data-leader:
   consul-data-replica:
+  portainer-data:
 
 networks:
   traefik-public:
     external: true
+  private:
+    driver: overlay
