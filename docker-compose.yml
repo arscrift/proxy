@@ -35,26 +35,25 @@ services:
           - node.role == manager
         preferences:
           - spread: node.id
+      labels:
+        # Dashboard
+        - "traefik.http.routers.traefik.rule=Host(`traefik.arscrift.digital`)"
+        - "traefik.http.routers.traefik.middlewares=auth"
+        - "traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}"
+        - "traefik.http.routers.traefik.service=api@internal"
+        - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+        # Traefik service that listens to HTTPS"
+        - "traefik.http.routers.traefik.entrypoints=websecure"
+        - "traefik.http.routers.traefik.tls.certresolver=leresolver"
+        # Traefik redirect to HTTPS
+        - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+        - "traefik.http.routers.http-catchall.entrypoints=web"
+        - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+        - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ~/acme.json:/acme.json
       - ~/traefik.log:/var/log/traefik.log
-    labels:
-      - traefik.enable=true
-      # Dashboard
-      - traefik.http.routers.traefik.rule=Host(`traefik.arscrift.digital`)
-      - traefik.http.routers.traefik.middlewares=auth
-      - traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
-      - traefik.http.routers.traefik.service=api@internal
-      #- traefik.http.services.traefik.loadbalancer.server.port=8080
-      # Traefik service that listens to HTTPS
-      - traefik.http.routers.traefik.entrypoints=websecure
-      - traefik.http.routers.traefik.tls.certresolver=leresolver
-      # Traefik redirect to HTTPS
-      - traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)
-      - traefik.http.routers.http-catchall.entrypoints=web
-      - traefik.http.routers.http-catchall.middlewares=redirect-to-https
-      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
     networks:
       - default
       - traefik-public
@@ -72,14 +71,14 @@ services:
       placement:
         constraints:
           - node.role == manager
-      # labels:
-      #   - traefik.enable=true
-      #   - traefik.http.routers.portainer.service=portainer
-      #   - traefik.http.services.portainer.loadbalancer.server.port=9000
-      #   - traefik.http.routers.portainer.tls.certresolver=leresolver
-      #   - traefik.http.routers.portainer.entrypoints=websecure
+      labels:
+        - "traefik.http.routers.portainer.rule=Host(`portainer.arscrift.digital`)"
+        - "traefik.http.routers.portainer.service=portainer"
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+        - "traefik.http.routers.portainer.tls.certresolver=leresolver"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
 
-  portainer_agent:
+  agent:
     image: portainer/agent
     environment:
       AGENT_CLUSTER_ADDR: tasks.agent
