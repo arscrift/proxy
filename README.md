@@ -10,9 +10,9 @@
 
 ![Portainer](portainer.png)
 
-## Traefik
+## Træfik
 
-![Traefik](traefik.png)
+![Træfik](traefik.png)
 
 ## AWS Route 53
 
