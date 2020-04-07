@@ -1,11 +1,33 @@
-version: '3.3'
+version: '3.7'
 
 services:
   traefik:
-    image: traefik:v1.7
+    image: traefik:v2.0.6
+    command:
+      - --providers.docker
+      - --providers.docker.swarmMode=true
+      - --providers.docker.network=traefik-public
+      - --providers.docker.watch
+      - --entryPoints.web.address=:80
+      - --entryPoints.websecure.address=:443
+      - --certificatesresolvers.leresolver.acme.caserver=https://acme-v02.api.letsencrypt.org/directory
+      - --certificatesResolvers.leresolver.acme.email=${EMAIL?Variable EMAIL not set}
+      - --certificatesResolvers.leresolver.acme.storage=/acme.json
+      - --certificatesresolvers.leresolver.acme.tlschallenge=true
+      - --log.level=DEBUG
+      - --log.filePath=/var/log/traefik.log
+      - --log.format
+      - --accesslog=true
+      - --accesslog.filepath=/var/log/access.log
+      - --accesslog.bufferingsize=100
+      - --metrics.prometheus=true
+      - --metrics.prometheus.buckets=0.1,0.3,1.2,5.0
+      - --metrics.prometheus.addServicesLabels=true
+      - --api
     ports:
       - 80:80
       - 443:443
+      - 8080:8080
     deploy:
       replicas: ${TRAEFIK_REPLICAS:-3}
       placement:
@@ -14,39 +36,24 @@ services:
         preferences:
           - spread: node.id
       labels:
-        - traefik.frontend.rule=Host:traefik.${DOMAIN?Variable DOMAIN not set}
-        - traefik.enable=true
-        - traefik.port=8080
-        - traefik.tags=traefik-public
-        - traefik.docker.network=traefik-public
-        # Traefik service that listens to HTTP
-        - traefik.redirectorservice.frontend.entryPoints=http
-        - traefik.redirectorservice.frontend.redirect.entryPoint=https
-        # Traefik service that listens to HTTPS
-        - traefik.webservice.frontend.entryPoints=https
-        - traefik.frontend.auth.basic.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}
+        # Dashboard
+        - "traefik.http.routers.traefik.rule=Host(`traefik.arscrift.digital`)"
+        - "traefik.http.routers.traefik.middlewares=auth"
+        - "traefik.http.middlewares.auth.basicauth.users=${USERNAME?Variable USERNAME not set}:${HASHED_PASSWORD?Variable HASHED_PASSWORD not set}"
+        - "traefik.http.routers.traefik.service=api@internal"
+        - "traefik.http.services.traefik.loadbalancer.server.port=8080"
+        # Traefik service that listens to HTTPS"
+        - "traefik.http.routers.traefik.entrypoints=websecure"
+        - "traefik.http.routers.traefik.tls.certresolver=leresolver"
+        # Traefik redirect to HTTPS
+        - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+        - "traefik.http.routers.http-catchall.entrypoints=web"
+        - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+        - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    command: >
-      --docker
-      --docker.swarmmode
-      --docker.watch
-      --docker.exposedbydefault=false
-      --constraints=tag==traefik-public
-      --entrypoints='Name:http Address::80'
-      --entrypoints='Name:https Address::443 TLS'
-      --consul
-      --consul.endpoint="consul-leader:8500"
-      --acme
-      --acme.email=${EMAIL?Variable EMAIL not set}
-      --acme.storage="traefik/acme/account"
-      --acme.entryPoint=https
-      --acme.httpChallenge.entryPoint=http
-      --acme.onhostrule=true
-      --acme.acmelogging=true
-      --logLevel=INFO
-      --accessLog
-      --api
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ~/acme.json:/acme.json
+      - ~/traefik.log:/var/log/traefik.log
     networks:
       - default
       - traefik-public
@@ -65,18 +72,13 @@ services:
         constraints:
           - node.role == manager
       labels:
-        - traefik.frontend.rule=Host:portainer.${DOMAIN?Variable DOMAIN not set}
-        - traefik.enable=true
-        - traefik.port=9000
-        - traefik.tags=${TRAEFIK_PUBLIC_TAG:-traefik-public}
-        - traefik.docker.network=traefik-public
-        # Traefik service that listens to HTTP
-        - traefik.redirectorservice.frontend.entryPoints=http
-        - traefik.redirectorservice.frontend.redirect.entryPoint=https
-        # Traefik service that listens to HTTPS
-        - traefik.webservice.frontend.entryPoints=https
+        - "traefik.http.routers.portainer.rule=Host(`portainer.arscrift.digital`)"
+        - "traefik.http.routers.portainer.service=portainer"
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+        - "traefik.http.routers.portainer.tls.certresolver=leresolver"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
 
-  portainer_agent:
+  agent:
     image: portainer/agent
     environment:
       AGENT_CLUSTER_ADDR: tasks.agent
@@ -92,8 +94,6 @@ services:
           - node.platform.os == linux
 
 volumes:
-  consul-data-leader:
-  consul-data-replica:
   portainer-data:
 
 networks:
